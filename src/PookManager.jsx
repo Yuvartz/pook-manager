@@ -55,12 +55,12 @@ const REAL = [
   { slug: "real_20", name: "פוט", dur: 1.04, color: "#F0A93B" },
   { slug: "real_18", name: "קלאסי", dur: 1.10, color: "#F0A93B" },
   { slug: "real_08", name: "מערה", dur: 0.73, color: "#5FA8D8" },
-  { slug: "real_04", name: "מהדהד", dur: 0.82, color: "#5FA8D8" },
+  { slug: "real_04", name: "אסלה", dur: 0.82, color: "#5FA8D8" },
   { slug: "real_12", name: "חמים", dur: 1.16, color: "#5FA8D8" },
   { slug: "real_22", name: "עגול", dur: 1.17, color: "#5FA8D8" },
   { slug: "real_06", name: "עמוק", dur: 1.19, color: "#5FA8D8" },
   { slug: "real_24", name: "בוצי", dur: 0.70, color: "#6FBF6A" },
-  { slug: "real_23", name: "ענק רטוב", dur: 3.17, color: "#6FBF6A" },
+  { slug: "real_23", name: "רטוב", dur: 0.46, color: "#6FBF6A" },
 ];
 const REAL_COLOR = "#6FBF6A";
 const sampleUrl = (slug) => `${import.meta.env.BASE_URL}farts/${slug}.mp3`;
@@ -68,12 +68,12 @@ const sampleUrl = (slug) => `${import.meta.env.BASE_URL}farts/${slug}.mp3`;
 /* ═══ music theory — scales for the fart keyboard ═══════════ */
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const SCALES = [
-  { id: "major",    name: "מז'ור",    emo: "☀️", steps: [0, 2, 4, 5, 7, 9, 11] },
-  { id: "minor",    name: "מינור",    emo: "🌙", steps: [0, 2, 3, 5, 7, 8, 10] },
-  { id: "penta",    name: "פנטטוני",  emo: "🎋", steps: [0, 3, 5, 7, 10] },
-  { id: "blues",    name: "בלוז",     emo: "🎷", steps: [0, 3, 5, 6, 7, 10] },
-  { id: "dorian",   name: "דוריאן",   emo: "🍃", steps: [0, 2, 3, 5, 7, 9, 10] },
-  { id: "harmonic", name: "מזרחי",    emo: "🐪", steps: [0, 1, 4, 5, 7, 8, 11] },
+  { id: "major",    name: "מז'ור",   steps: [0, 2, 4, 5, 7, 9, 11] },
+  { id: "minor",    name: "מינור",   steps: [0, 2, 3, 5, 7, 8, 10] },
+  { id: "penta",    name: "פנטטוני", steps: [0, 3, 5, 7, 10] },
+  { id: "blues",    name: "בלוז",    steps: [0, 3, 5, 6, 7, 10] },
+  { id: "dorian",   name: "דוריאן",  steps: [0, 2, 3, 5, 7, 9, 10] },
+  { id: "harmonic", name: "מזרחי",   steps: [0, 1, 4, 5, 7, 8, 11] },
 ];
 
 /* one piano octave + the tonic on top; semitone offset from the sample's own pitch */
@@ -216,6 +216,10 @@ const IconStop = () => <Ico fill="currentColor" d={<rect x="5.5" y="5.5" width="
 const IconRec = () => <Ico fill="currentColor" d={<circle cx="12" cy="12" r="6.5" stroke="none" />} />;
 const IconTrash = () => <Ico d={<><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></>} />;
 const IconGrid = () => <Ico d={<><path d="M4 9h16M4 15h16M9 4v16M15 4v16" /></>} />;
+
+/* ── scale icons: gpt-image-1 stickers in public/scales/ — a cheeky
+   peach-bottom letting one rip, a different mood per scale ── */
+const scaleIconUrl = (id) => `${import.meta.env.BASE_URL}scales/${id}.png`;
 
 /* ═══ component ═════════════════════════════════════════════ */
 export default function PookManager() {
@@ -656,10 +660,17 @@ export default function PookManager() {
             <div className="pk-scroll flex gap-1 overflow-x-auto">
               {SCALES.map((s, i) => (
                 <button key={s.id} onClick={() => setScaleIdx(i)}
-                  className="pk shrink-0 rounded-sm border px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-                  style={{ ...btn(i === scaleIdx, C.amber), fontSize: 17, lineHeight: 1.15, minWidth: 38 }}
+                  className="pk flex shrink-0 items-center justify-center rounded-sm border p-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                  style={{
+                    /* colorful stickers need a dark seat — select with border + glow, not a fill */
+                    background: i === scaleIdx ? C.padHot : "transparent",
+                    borderColor: i === scaleIdx ? C.amber : C.line,
+                    boxShadow: i === scaleIdx ? `0 0 10px ${C.amber}55` : "none",
+                    opacity: i === scaleIdx ? 1 : 0.72,
+                  }}
                   title={s.name} aria-label={s.name} aria-pressed={i === scaleIdx}>
-                  {s.emo}
+                  <img src={scaleIconUrl(s.id)} alt="" width="44" height="44"
+                    style={{ display: "block", imageRendering: "auto" }} draggable="false" />
                 </button>
               ))}
             </div>
