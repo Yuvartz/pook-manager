@@ -18,27 +18,7 @@ const C = {
 };
 
 /* ═══ helpers ═══════════════════════════════════════════════ */
-const L = (a, b, k) => a + (b - a) * k;
 const rnd = (a, b) => a + Math.random() * (b - a);
-const pad2 = (n) => String(n).padStart(2, "0");
-
-function seeded(n) {
-  let s = (n * 9301 + 49297) % 233280;
-  return () => {
-    s = (s * 9301 + 49297) % 233280;
-    return s / 233280;
-  };
-}
-
-function makeCurve(k) {
-  const n = 1024;
-  const c = new Float32Array(n);
-  for (let i = 0; i < n; i++) {
-    const x = (i * 2) / n - 1;
-    c[i] = ((1 + k) * x) / (1 + k * Math.abs(x));
-  }
-  return c;
-}
 
 function makeNoise(ctx, brown) {
   const len = ctx.sampleRate * 2;
@@ -54,182 +34,6 @@ function makeNoise(ctx, brown) {
   }
   return buf;
 }
-
-/* ═══ fart voice ════════════════════════════════════════════ */
-function burst(ctx, dest, p, t0, bufs) {
-  const dur = Math.max(0.05, p.dur * rnd(0.9, 1.12));
-  const jit = rnd(0.9, 1.12);
-  const atk = p.attack ?? 0.012;
-
-  const amp = ctx.createGain();
-  amp.gain.setValueAtTime(0.0001, t0);
-  amp.gain.linearRampToValueAtTime(p.gain, t0 + atk);
-  if (p.hold) amp.gain.setValueAtTime(p.gain, t0 + dur * 0.68);
-  amp.gain.exponentialRampToValueAtTime(0.0004, t0 + dur);
-
-  const lp = ctx.createBiquadFilter();
-  lp.type = "lowpass";
-  lp.Q.value = p.q ?? 5;
-  lp.frequency.setValueAtTime(p.cut0, t0);
-  lp.frequency.exponentialRampToValueAtTime(Math.max(60, p.cut1), t0 + dur);
-
-  const shaper = ctx.createWaveShaper();
-  shaper.curve = makeCurve(p.drive ?? 8);
-  shaper.oversample = "2x";
-
-  shaper.connect(lp);
-  lp.connect(amp);
-  amp.connect(dest);
-
-  const osc = ctx.createOscillator();
-  osc.type = p.wave ?? "sawtooth";
-  osc.frequency.setValueAtTime(Math.max(20, p.f0 * jit), t0);
-  osc.frequency.exponentialRampToValueAtTime(Math.max(18, p.f1 * jit), t0 + dur);
-  const og = ctx.createGain();
-  og.gain.value = p.oscAmt ?? 1;
-  osc.connect(og);
-  og.connect(shaper);
-  osc.start(t0);
-  osc.stop(t0 + dur + 0.06);
-
-  if (p.wobDepth) {
-    const lfo = ctx.createOscillator();
-    lfo.type = p.wobWave ?? "triangle";
-    lfo.frequency.setValueAtTime(Math.max(0.5, p.wobRate * rnd(0.85, 1.18)), t0);
-    if (p.wobRate1) lfo.frequency.linearRampToValueAtTime(Math.max(0.5, p.wobRate1), t0 + dur);
-    const lg = ctx.createGain();
-    lg.gain.value = p.wobDepth;
-    lfo.connect(lg);
-    lg.connect(osc.frequency);
-    lfo.start(t0);
-    lfo.stop(t0 + dur + 0.06);
-  }
-
-  if (p.noise) {
-    const src = ctx.createBufferSource();
-    src.buffer = p.white ? bufs.white : bufs.brown;
-    src.loop = true;
-    src.playbackRate.value = rnd(0.8, 1.25);
-    const bp = ctx.createBiquadFilter();
-    bp.type = "bandpass";
-    bp.Q.value = p.noiseQ ?? 1.1;
-    bp.frequency.setValueAtTime(Math.max(60, p.noiseF ?? 800), t0);
-    bp.frequency.exponentialRampToValueAtTime(Math.max(60, p.noiseF1 ?? p.noiseF ?? 500), t0 + dur);
-    const ng = ctx.createGain();
-    ng.gain.value = p.noise;
-    src.connect(bp);
-    bp.connect(ng);
-    ng.connect(shaper);
-    src.start(t0, rnd(0, 1));
-    src.stop(t0 + dur + 0.06);
-  }
-
-  if (p.sputRate) {
-    const s = ctx.createOscillator();
-    s.type = "square";
-    s.frequency.value = p.sputRate * rnd(0.8, 1.25);
-    const sg = ctx.createGain();
-    sg.gain.value = p.gain * (p.sputDepth ?? 0.5);
-    s.connect(sg);
-    sg.connect(amp.gain);
-    s.start(t0);
-    s.stop(t0 + dur + 0.06);
-  }
-}
-
-/* ═══ the library — 100 units in 12 families ════════════════ */
-const NOTES = [
-  ["A2", 110], ["C3", 130.8], ["D3", 146.8], ["E3", 164.8],
-  ["G3", 196], ["A3", 220], ["C4", 261.6], ["D4", 293.7],
-];
-
-const FAMILIES = [
-  {
-    id: "classic", name: "קלאסי", color: "#F0A93B", count: 10,
-    mods: ["קצר", "יבש", "חד", "נקי", "עגול", "מהוסס", "חצוף", "מהיר", "מנומס", "ממושך"],
-    make: (k) => ({ p: { dur: L(0.2, 0.45, k), f0: L(250, 150, k), f1: L(125, 72, k), gain: 0.9, wobRate: L(27, 15, k), wobDepth: L(28, 56, k), noise: L(0.18, 0.32, k), noiseF: 900, noiseF1: 400, cut0: L(1150, 780, k), cut1: L(420, 290, k), drive: L(8, 14, k) } }),
-  },
-  {
-    id: "brap", name: "בראפ", color: "#E8763B", count: 10,
-    mods: ["רגיל", "שמן", "קרוע", "מתמשך", "זועם", "עמוק", "מתגלגל", "חורק", "אינסופי", "אפי"],
-    make: (k) => ({ p: { dur: L(0.65, 1.9, k), f0: L(155, 105, k), f1: L(92, 62, k), gain: 0.95, hold: true, wobWave: "square", wobRate: L(21, 12, k), wobRate1: L(11, 6, k), wobDepth: L(42, 74, k), noise: 0.2, noiseF: 1000, noiseF1: 430, cut0: L(1300, 900, k), cut1: L(500, 330, k), drive: L(12, 19, k) } }),
-  },
-  {
-    id: "squeak", name: "צייצן", color: "#E8D14A", count: 8,
-    mods: ["עכבר", "ציוץ", "דק", "מצפצף", "חלקלק", "נמלט", "מחט", "אולטרה"],
-    make: (k) => ({ p: { dur: L(0.16, 0.36, k), f0: L(370, 640, k), f1: L(680, 1150, k), gain: L(0.45, 0.58, k), q: L(8, 13, k), wobRate: L(33, 50, k), wobDepth: L(24, 46, k), noise: 0.1, white: true, noiseF: 2400, cut0: L(2400, 3600, k), cut1: L(2800, 4000, k), drive: 4 } }),
-  },
-  {
-    id: "bass", name: "באס", color: "#6C8FD8", count: 10,
-    mods: ["תת-קרקעי", "רעם", "מנוע", "אדמה", "תופת", "מערה", "לוויתן", "טקטוני", "געש", "שבר"],
-    make: (k) => ({ p: { dur: L(1, 2.3, k), f0: L(90, 58, k), f1: L(46, 29, k), gain: 1, hold: true, wobRate: L(11, 5.5, k), wobDepth: L(9, 22, k), noise: L(0.1, 0.2, k), noiseF: 330, noiseF1: 140, cut0: L(520, 340, k), cut1: L(190, 115, k), drive: L(15, 22, k) } }),
-  },
-  {
-    id: "burst", name: "רצף", color: "#D2542A", count: 8,
-    mods: ["שלישייה", "מקלע", "טרטור", "דפיקות", "גמגום", "מורס", "ברד", "עצבני"],
-    make: (k, r) => {
-      const n = Math.round(L(3, 9, k));
-      const gap = L(0.15, 0.085, k);
-      const bursts = [];
-      for (let i = 0; i < n; i++) bursts.push({ d: i * gap * (0.85 + r() * 0.3), g: 1 - i * 0.04 });
-      return { bursts, p: { dur: L(0.13, 0.08, k), f0: L(235, 165, k), f1: L(150, 110, k), gain: 0.85, wobRate: L(28, 36, k), wobDepth: 48, noise: 0.3, noiseF: 1100, cut0: 1150, cut1: 600, drive: 12 } };
-    },
-  },
-  {
-    id: "wet", name: "רטוב", color: "#6FBF6A", count: 10,
-    mods: ["רטוב", "בוצי", "נזלת", "מרק", "ביצה", "מלמול", "שלולית", "רפש", "גרגור", "טובעני"],
-    make: (k) => ({ p: { dur: L(0.45, 1.2, k), f0: L(165, 120, k), f1: L(95, 70, k), gain: 0.85, wobRate: L(15, 10, k), wobDepth: L(40, 58, k), sputRate: L(32, 16, k), sputDepth: L(0.5, 0.72, k), noise: L(0.42, 0.72, k), noiseF: 1500, noiseF1: 560, cut0: L(1700, 1200, k), cut1: L(500, 380, k), drive: 12 } }),
-  },
-  {
-    id: "tonal", name: "טונאלי", color: "#C77BD8", count: 8,
-    mods: ["חצוצרה", "שופר", "קרן", "טובה", "קלרינט", "אבוב", "צופר", "אקורדיון"],
-    make: (k) => ({ p: { wave: k > 0.5 ? "square" : "sawtooth", dur: L(0.55, 1.3, k), f0: L(260, 170, k), f1: L(215, 150, k), gain: 0.62, hold: true, wobRate: L(6.5, 4.5, k), wobDepth: L(7, 14, k), noise: 0.06, noiseF: 1200, cut0: L(2000, 1300, k), cut1: L(1500, 950, k), drive: L(5, 9, k) } }),
-  },
-  {
-    id: "air", name: "אוויר", color: "#8FA8A0", count: 8,
-    mods: ["נשיפה", "דליפה", "בלון", "צמיג", "לחישה", "אדים", "סילון", "רוח"],
-    make: (k) => ({ p: { dur: L(0.55, 1.5, k), f0: L(130, 95, k), f1: L(100, 70, k), oscAmt: L(0.1, 0.26, k), gain: 0.8, hold: true, noise: 1, white: true, noiseF: L(1100, 750, k), noiseF1: L(430, 280, k), noiseQ: 0.75, cut0: L(2500, 1600, k), cut1: L(900, 620, k), drive: 3 } }),
-  },
-  {
-    id: "exotic", name: "אקזוטי", color: "#45B3A6", count: 10,
-    mods: ["טורבו", "חייזר", "מפוחית", "לייזר", "גלישה", "דופלר", "מנוע-על", "זיגזג", "ואו-ואו", "הפוך"],
-    make: (k, r) => {
-      const up = r() > 0.45;
-      return { p: { dur: L(0.5, 1.5, k), f0: up ? L(95, 130, k) : L(330, 420, k), f1: up ? L(330, 500, k) : L(90, 70, k), gain: 0.9, hold: true, wobWave: r() > 0.5 ? "sine" : "triangle", wobRate: L(6, 14, k), wobRate1: L(30, 44, k), wobDepth: L(55, 100, k), noise: 0.28, noiseF: 800, noiseF1: 1600, cut0: L(800, 1400, k), cut1: L(2200, 900, k), drive: L(12, 18, k) } };
-    },
-  },
-  {
-    id: "echo", name: "הדהוד", color: "#5FA8D8", count: 6,
-    mods: ["אמבטיה", "מנהרה", "חדר מדרגות", "קתדרלה", "מעלית", "חלל"],
-    make: (k) => ({ echo: true, echoTime: L(0.11, 0.32, k), echoFb: L(0.35, 0.62, k), p: { dur: L(0.35, 0.7, k), f0: L(185, 130, k), f1: L(105, 78, k), gain: 0.85, wobRate: L(20, 13, k), wobDepth: 50, noise: 0.24, noiseF: 900, cut0: 1000, cut1: 380, drive: 12 } }),
-  },
-  {
-    id: "boss", name: "בוס", color: "#E04A4A", count: 4,
-    mods: ["הבוס", "קרקן", "אפוקליפסה", "סוף העולם"],
-    make: (k) => ({ echo: true, echoTime: 0.16, echoFb: 0.45, p: { dur: L(2.4, 4.2, k), f0: L(165, 190, k), f1: L(48, 36, k), gain: 1, hold: true, wobRate: L(22, 26, k), wobRate1: L(7, 5, k), wobDepth: L(70, 95, k), sputRate: L(9, 6, k), sputDepth: 0.3, noise: 0.35, noiseF: 1300, noiseF1: 250, cut0: 1600, cut1: L(210, 150, k), drive: L(20, 24, k) } }),
-  },
-  {
-    id: "melodic", name: "מלודי", color: "#F0C93B", count: 8,
-    mods: NOTES.map((n) => n[0]),
-    make: (k, r, i) => {
-      const f = NOTES[i][1];
-      return { p: { dur: 0.42, f0: f, f1: f * 0.94, gain: 0.75, hold: true, wave: "sawtooth", wobRate: 15, wobDepth: f * 0.06, noise: 0.12, noiseF: f * 6, cut0: f * 8, cut1: f * 3, drive: 10, q: 4 } };
-    },
-  },
-];
-
-const UNITS = (() => {
-  const out = [];
-  FAMILIES.forEach((f, fi) => {
-    for (let i = 0; i < f.count; i++) {
-      const k = f.count === 1 ? 0 : i / (f.count - 1);
-      const r = seeded(fi * 977 + i * 31);
-      const u = f.make(k, r, i);
-      out.push({ id: out.length, fam: f.id, famName: f.name, color: f.color, name: f.mods[i], ...u });
-    }
-  });
-  return out;
-})();
 
 /* ═══ real farts — recorded samples, sliced & de-duped ══════ */
 const REAL = [
@@ -260,6 +64,20 @@ const REAL = [
 ];
 const REAL_COLOR = "#6FBF6A";
 const sampleUrl = (slug) => `${import.meta.env.BASE_URL}farts/${slug}.mp3`;
+
+/* ═══ music theory — scales for the fart keyboard ═══════════ */
+const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
+const SCALES = [
+  { id: "major", name: "מז'ור", steps: [0, 2, 4, 5, 7, 9, 11] },
+  { id: "minor", name: "מינור", steps: [0, 2, 3, 5, 7, 8, 10] },
+  { id: "penta", name: "פנטטוני", steps: [0, 3, 5, 7, 10] },
+  { id: "blues", name: "בלוז", steps: [0, 3, 5, 6, 7, 10] },
+  { id: "dorian", name: "דוריאן", steps: [0, 2, 3, 5, 7, 9, 10] },
+  { id: "harmonic", name: "מזרחי", steps: [0, 1, 4, 5, 7, 8, 11] },
+];
+const KEYS_ROW = ["a", "s", "d", "f", "g", "h", "j", "k", "l", ";", "'"];
+/* midi 60 = C4; the sample's own pitch is treated as the root */
+const semisToRate = (s) => Math.pow(2, s / 12);
 
 /* ═══ drum voices ═══════════════════════════════════════════ */
 function dKick(ctx, d, t, g = 1) {
@@ -377,6 +195,20 @@ const BEATS = [
   { id: "click", name: "מטרונום", bpm: 100, swing: 0, k: "", s: "", h: "", p: "", click: "x---x---x---x---" },
 ];
 
+/* ═══ icons ═════════════════════════════════════════════════ */
+const Ico = ({ d, fill = "none", size = 15 }) => (
+  <svg width={size} height={size} viewBox="0 0 24 24" fill={fill} stroke="currentColor"
+    strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"
+    style={{ display: "block", flexShrink: 0 }}>
+    {d}
+  </svg>
+);
+const IconPlay = () => <Ico fill="currentColor" d={<path d="M7 4.5v15l13-7.5z" stroke="none" />} />;
+const IconStop = () => <Ico fill="currentColor" d={<rect x="5.5" y="5.5" width="13" height="13" rx="1.5" stroke="none" />} />;
+const IconRec = () => <Ico fill="currentColor" d={<circle cx="12" cy="12" r="6.5" stroke="none" />} />;
+const IconTrash = () => <Ico d={<><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></>} />;
+const IconGrid = () => <Ico d={<><path d="M4 9h16M4 15h16M9 4v16M15 4v16" /></>} />;
+
 /* ═══ component ═════════════════════════════════════════════ */
 export default function PookManager() {
   const [armed, setArmed] = useState(false);
@@ -385,8 +217,6 @@ export default function PookManager() {
   const [level, setLevel] = useState(0);
   const [total, setTotal] = useState(0);
   const [active, setActive] = useState(null);
-  const [tab, setTab] = useState("all");
-  const [query, setQuery] = useState("");
   const [playing, setPlaying] = useState(false);
   const [beatIdx, setBeatIdx] = useState(0);
   const [bpm, setBpm] = useState(BEATS[0].bpm);
@@ -395,6 +225,12 @@ export default function PookManager() {
   const [recording, setRecording] = useState(false);
   const [loop, setLoop] = useState([]);
   const [realLoaded, setRealLoaded] = useState(0);
+  /* fart keyboard */
+  const [kbUnit, setKbUnit] = useState(15);        // which sample is "the instrument"
+  const [scaleIdx, setScaleIdx] = useState(0);
+  const [rootIdx, setRootIdx] = useState(0);       // 0 = C
+  const [octave, setOctave] = useState(0);         // -1 / 0 / +1
+  const [noteHot, setNoteHot] = useState(null);
 
   const A = useRef(null);
   const raf = useRef(null);
@@ -454,8 +290,8 @@ export default function PookManager() {
 
   useEffect(() => { if (A.current) A.current.fart.gain.value = fartVol; }, [fartVol]);
   useEffect(() => { if (A.current) A.current.drums.gain.value = drumVol; }, [drumVol]);
-  /* warm up recorded samples as soon as the real tab is opened */
-  useEffect(() => { if (tab === "real" && A.current) loadSamples(); }, [tab, loadSamples]);
+  /* warm up recorded samples once the engine is armed */
+  useEffect(() => { if (armed) loadSamples(); }, [armed, loadSamples]);
 
   const meter = useCallback(() => {
     const a = A.current;
@@ -470,46 +306,20 @@ export default function PookManager() {
     raf.current = requestAnimationFrame(meter);
   }, []);
 
-  const voice = useCallback((i, when) => {
-    const u = UNITS[i];
-    const a = init();
-    const { ctx, fart, bufs } = a;
-    let dest = fart;
-    if (u.echo) {
-      const dly = ctx.createDelay(1);
-      dly.delayTime.value = u.echoTime ?? 0.15;
-      const fb = ctx.createGain();
-      fb.gain.value = u.echoFb ?? 0.42;
-      const damp = ctx.createBiquadFilter();
-      damp.type = "lowpass";
-      damp.frequency.value = 1200;
-      const wet = ctx.createGain();
-      wet.gain.value = 0.5;
-      dly.connect(damp);
-      damp.connect(fb);
-      fb.connect(dly);
-      dly.connect(wet);
-      wet.connect(fart);
-      const bus = ctx.createGain();
-      bus.connect(fart);
-      bus.connect(dly);
-      dest = bus;
-    }
-    const list = u.bursts ?? [{ d: 0 }];
-    list.forEach((b) => burst(ctx, dest, { ...u.p, dur: u.p.dur * (b.s ?? 1), gain: u.p.gain * (b.g ?? 1) }, when + b.d, bufs));
-  }, [init]);
 
-  /* play a recorded sample through the fart bus */
-  const playSample = useCallback((idx, when) => {
+  /* play a recorded sample through the fart bus.
+     semis != null → pitched (keyboard); null → natural pitch with a touch of jitter */
+  const playSample = useCallback((idx, when, semis = null) => {
     const a = init();
     const r = REAL[idx];
     if (!r) return;
     const fireBuf = (buf) => {
       const src = a.ctx.createBufferSource();
       src.buffer = buf;
-      src.playbackRate.value = rnd(0.97, 1.04);   // subtle variation each hit
+      src.playbackRate.value = semis === null ? rnd(0.97, 1.04) : semisToRate(semis);
       const g = a.ctx.createGain();
-      g.gain.value = 0.92;
+      /* pitching up shortens and brightens the sample — trim the gain a little */
+      g.gain.value = semis === null ? 0.92 : 0.92 * (semis > 0 ? 0.92 : 1);
       src.connect(g);
       g.connect(a.fart);
       src.start(Math.max(when, a.ctx.currentTime));
@@ -545,14 +355,14 @@ export default function PookManager() {
       if (beat.o && beat.o[i] === "o") dHat(ctx, drums, t, bufs, true, 0.22);
       if (beat.p && beat.p[i] === "x") dPerc(ctx, drums, t, bufs);
       if (beat.click && beat.click[i] === "x") dClick(ctx, drums, t, i === 0 ? 0.7 : 0.4);
-      S.current.loop.forEach((h) => { if (h.step === i) (h.real != null ? playSample(h.real, t) : voice(h.u, t)); });
+      S.current.loop.forEach((h) => { if (h.step === i) playSample(h.real, t, h.semis ?? null); });
       const shown = i;
       setTimeout(() => setStep(shown), Math.max(0, (T.current.next - ctx.currentTime) * 1000));
       T.current.next += sd;
       T.current.step = (i + 1) % 16;
       if (T.current.step === 0) T.current.start = T.current.next;
     }
-  }, [stepDur, voice, playSample]);
+  }, [stepDur, playSample]);
 
   const stop = useCallback(() => {
     if (T.current.timer) clearInterval(T.current.timer);
@@ -588,40 +398,9 @@ export default function PookManager() {
     T.current.step = 0;
   }, [bpm, beatIdx]); // eslint-disable-line
 
-  /* ── fire a fart ── */
-  const fire = useCallback((i) => {
-    const a = init();
-    const { ctx } = a;
-    if (ctx.state === "suspended") ctx.resume();
-    setArmed(true);
-    if (!raf.current) raf.current = requestAnimationFrame(meter);
-
-    const sd = stepDur();
-    const mod16 = (n) => ((n % 16) + 16) % 16;
-    let when = ctx.currentTime + 0.02;
-    let landStep = null;
-    if (S.current.playing) {
-      const elapsed = ctx.currentTime - T.current.start;
-      if (S.current.quantize) {
-        const idx = Math.ceil(elapsed / sd);
-        when = T.current.start + idx * sd;
-        landStep = mod16(idx);
-      } else {
-        landStep = mod16(Math.round(elapsed / sd));
-      }
-    }
-    voice(i, when);
-    if (S.current.recording && landStep !== null) {
-      setLoop((l) => (l.length > 31 ? l : [...l, { step: landStep, u: i, k: Date.now() + Math.random() }]));
-    }
-    setTotal((n) => n + 1);
-    setActive(i);
-    if (flash.current) clearTimeout(flash.current);
-    flash.current = setTimeout(() => setActive(null), 160);
-  }, [init, meter, stepDur, voice]);
-
-  /* ── fire a recorded (real) fart — same quantize/record path ── */
-  const fireReal = useCallback((idx) => {
+  /* ── fire a recorded (real) fart — quantize + loop-record path.
+        semis != null → played as a pitched note from the keyboard ── */
+  const fireReal = useCallback((idx, semis = null) => {
     const a = init();
     const { ctx } = a;
     if (ctx.state === "suspended") ctx.resume();
@@ -643,29 +422,42 @@ export default function PookManager() {
         landStep = mod16(Math.round(elapsed / sd));
       }
     }
-    playSample(idx, when);
+    playSample(idx, when, semis);
     if (S.current.recording && landStep !== null) {
-      setLoop((l) => (l.length > 31 ? l : [...l, { step: landStep, real: idx, k: Date.now() + Math.random() }]));
+      setLoop((l) => (l.length > 31 ? l : [...l, { step: landStep, real: idx, semis, k: Date.now() + Math.random() }]));
     }
     setTotal((n) => n + 1);
-    setActive("r" + idx);
+    setActive(semis === null ? "r" + idx : null);
     if (flash.current) clearTimeout(flash.current);
     flash.current = setTimeout(() => setActive(null), 160);
   }, [init, meter, stepDur, playSample, loadSamples]);
+
+  /* ── the fart keyboard: play a scale degree ── */
+  const notes = SCALES[scaleIdx].steps;
+  const playNote = useCallback((degree) => {
+    const sc = SCALES[scaleIdx].steps;
+    const oct = Math.floor(degree / sc.length);
+    const semis = rootIdx + sc[degree % sc.length] + 12 * (oct + octave);
+    fireReal(kbUnit, semis);
+    setNoteHot(degree);
+    setTimeout(() => setNoteHot((d) => (d === degree ? null : d)), 150);
+  }, [scaleIdx, rootIdx, octave, kbUnit, fireReal]);
 
   useEffect(() => {
     const onKey = (e) => {
       if (e.target && e.target.tagName === "INPUT") return;
       if (e.code === "Space") { e.preventDefault(); S.current.playing ? stop() : start(); return; }
+      if (e.repeat) return;
       const n = parseInt(e.key, 10);
-      if (!isNaN(n)) fire(n === 0 ? Math.floor(Math.random() * UNITS.length) : n - 1);
+      if (!isNaN(n) && e.key.length === 1) { fireReal(n === 0 ? Math.floor(Math.random() * REAL.length) : Math.min(n - 1, REAL.length - 1)); return; }
+      const ki = KEYS_ROW.indexOf(e.key.toLowerCase());
+      if (ki !== -1) playNote(ki);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [fire, start, stop]);
+  }, [fireReal, playNote, start, stop]);
 
   /* ── derived ── */
-  const shown = UNITS.filter((u) => (tab === "all" || u.fam === tab) && (query === "" || u.name.includes(query) || u.famName.includes(query)));
   const segs = 28;
   const lit = Math.min(segs, Math.round(level * segs));
   const beat = BEATS[beatIdx];
@@ -679,9 +471,14 @@ export default function PookManager() {
   return (
     <div dir="rtl" className="min-h-screen w-full font-mono" style={{ background: C.bg, color: C.bone }}>
       <style>{`
-        .pk { transition: transform 90ms ease-out, background 120ms, border-color 120ms; }
+        .pk { transition: transform 90ms ease-out, background 120ms, border-color 120ms, box-shadow 150ms; }
         .pk:active { transform: scale(0.95); }
-        @media (prefers-reduced-motion: reduce) { .pk, .pk:active { transition: none; transform: none; } }
+        @keyframes pk-recpulse { 0% { box-shadow: 0 0 0 0 ${C.rec}88; } 70% { box-shadow: 0 0 0 7px ${C.rec}00; } 100% { box-shadow: 0 0 0 0 ${C.rec}00; } }
+        .pk-recording { animation: pk-recpulse 1.15s ease-out infinite; }
+        @keyframes pk-blink { 0%, 100% { opacity: 1; } 50% { opacity: 0.2; } }
+        .pk-blink { animation: pk-blink 0.95s steps(1, end) infinite; }
+        .pk-glow { box-shadow: 0 0 12px ${C.cyan}66; }
+        @media (prefers-reduced-motion: reduce) { .pk, .pk:active { transition: none; transform: none; } .pk-recording, .pk-blink { animation: none; } }
         .pk-rng { -webkit-appearance:none; appearance:none; height:4px; border-radius:2px; outline:none; }
         .pk-rng::-webkit-slider-thumb { -webkit-appearance:none; width:13px; height:22px; border-radius:2px; background:${C.amber}; cursor:pointer; }
         .pk-rng::-moz-range-thumb { width:13px; height:22px; border:0; border-radius:2px; background:${C.amber}; cursor:pointer; }
@@ -694,7 +491,7 @@ export default function PookManager() {
         <header className="flex items-end justify-between border-b pb-3" style={{ borderColor: C.line }}>
           <div>
             <h1 className="text-xl font-bold sm:text-3xl" style={{ letterSpacing: "0.16em" }}>POOK&nbsp;MANAGER</h1>
-            <p className="mt-1 text-xs" style={{ color: C.dim }}>תחנת פליטות · 100 יחידות + 24 אמיתיות · 12 מקצבים</p>
+            <p className="mt-1 text-xs" style={{ color: C.dim }}>תחנת פליטות · 24 פליצות אמיתיות · 12 מקצבים</p>
           </div>
           <div className="flex items-center gap-2 text-xs" style={{ color: armed ? C.cyan : C.dim }}>
             <span className="inline-block h-2 w-2 rounded-full" style={{ background: armed ? C.cyan : C.line, boxShadow: armed ? `0 0 8px ${C.cyan}` : "none" }} />
@@ -745,7 +542,7 @@ export default function PookManager() {
                   <div className="h-6 rounded-sm border" style={{ background: on ? C.amber : i % 4 === 0 ? C.pad : C.panel2, borderColor: on ? C.amber : C.line2 }} />
                   <div className="mt-1 flex justify-center gap-px" style={{ height: 4 }}>
                     {hits.slice(0, 3).map((h) => (
-                      <span key={h.k} className="h-1 w-1 rounded-full" style={{ background: h.real != null ? REAL[h.real].color : UNITS[h.u].color }} />
+                      <span key={h.k} className="h-1 w-1 rounded-full" style={{ background: REAL[h.real].color }} />
                     ))}
                   </div>
                 </div>
@@ -756,24 +553,26 @@ export default function PookManager() {
           {/* transport */}
           <div className="flex flex-wrap items-center gap-2 px-3 pb-3">
             <button onClick={() => (playing ? stop() : start())}
-              className="pk rounded-sm border px-4 py-2 text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-              style={btn(playing, C.cyan)}>
+              className={`pk flex items-center gap-2 rounded-sm border px-4 py-2 text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${playing ? "pk-glow" : ""}`}
+              style={btn(playing, C.cyan)} aria-pressed={playing} aria-label={playing ? "עצור" : "נגן"}>
+              {playing ? <IconStop /> : <IconPlay />}
               {playing ? "עצור" : "נגן"}
             </button>
             <button onClick={() => { if (!playing) start(); setRecording((r) => !r); }}
-              className="pk rounded-sm border px-3 py-2 text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-              style={btn(recording, C.rec)}>
-              ● הקלט
+              className={`pk flex items-center gap-2 rounded-sm border px-3 py-2 text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${recording ? "pk-recording" : ""}`}
+              style={btn(recording, C.rec)} aria-pressed={recording} aria-label={recording ? "מקליט" : "הקלט"}>
+              <span className={recording ? "pk-blink" : ""} style={{ display: "flex" }}><IconRec /></span>
+              {recording ? "מקליט" : "הקלט"}
             </button>
             <button onClick={() => setLoop([])}
-              className="pk rounded-sm border px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-              style={{ borderColor: C.line, color: C.dim }}>
-              נקה לולאה {loop.length > 0 && `(${loop.length})`}
+              className="pk flex items-center gap-2 rounded-sm border px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+              style={{ borderColor: C.line, color: C.dim }} aria-label="נקה לולאה">
+              <IconTrash /> נקה {loop.length > 0 && `(${loop.length})`}
             </button>
             <button onClick={() => setQuantize((q) => !q)}
-              className="pk rounded-sm border px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-              style={btn(quantize, C.amber)}>
-              יישור לביט
+              className="pk flex items-center gap-2 rounded-sm border px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+              style={btn(quantize, C.amber)} aria-pressed={quantize}>
+              <IconGrid /> יישור לביט
             </button>
             <label className="flex flex-1 items-center gap-2 text-xs" style={{ color: C.dim, minWidth: 150 }}>
               {bpm} BPM
@@ -797,78 +596,115 @@ export default function PookManager() {
               onChange={(e) => setDrumVol(parseFloat(e.target.value))} style={{ background: C.line }} aria-label="עוצמת מוזיקה" />
             <span style={{ color: C.bone, width: 34, textAlign: "left" }}>{Math.round(drumVol * 100)}</span>
           </label>
-          <button onClick={() => fire(Math.floor(Math.random() * UNITS.length))}
+          <button onClick={() => fireReal(Math.floor(Math.random() * REAL.length))}
             className="pk rounded-sm border px-4 py-2 text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
             style={{ borderColor: C.amber, color: C.amber }}>
             אקראי
           </button>
         </section>
 
-        {/* library */}
+        {/* library — real farts only */}
         <section className="mt-3 rounded-sm border" style={{ borderColor: C.line, background: C.panel }}>
           <div className="flex items-center gap-2 border-b px-3 py-2" style={{ borderColor: C.line2 }}>
-            <span className="text-xs" style={{ color: C.dim }}>{tab === "real" ? "פליצות אמיתיות" : "ספריית צלילים"}</span>
-            <span className="text-xs" style={{ color: C.dim2 }}>{tab === "real" ? `${REAL.length} דגומות${realLoaded < REAL.length ? " · טוען…" : ""}` : `${shown.length}/100`}</span>
-            {tab !== "real" && (
-              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="חיפוש"
-                className="mr-auto w-24 rounded-sm border px-2 py-1 text-xs focus:outline-none sm:w-40"
-                style={{ background: C.panel2, borderColor: C.line, color: C.bone }} />
-            )}
+            <span className="text-xs" style={{ color: C.dim }}>פליצות אמיתיות</span>
+            <span className="mr-auto text-xs" style={{ color: C.dim2 }}>
+              {REAL.length} דגומות{realLoaded > 0 && realLoaded < REAL.length ? " · טוען…" : ""}
+            </span>
           </div>
 
-          <div className="pk-scroll flex gap-1 overflow-x-auto px-3 py-2">
-            <button onClick={() => setTab("all")}
-              className="pk shrink-0 rounded-sm border px-2 py-1 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-              style={btn(tab === "all", C.bone)}>הכל</button>
-            {FAMILIES.map((f) => (
-              <button key={f.id} onClick={() => setTab(f.id)}
-                className="pk shrink-0 rounded-sm border px-2 py-1 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-                style={btn(tab === f.id, f.color)}>{f.name}</button>
-            ))}
-            <button onClick={() => setTab("real")}
-              className="pk shrink-0 rounded-sm border px-2 py-1 text-xs font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-              style={btn(tab === "real", REAL_COLOR)}>★ אמיתי</button>
-          </div>
-
-          {tab === "real" ? (
-            <div className="grid grid-cols-3 gap-1 p-3 pt-1 sm:grid-cols-5 md:grid-cols-6">
-              {REAL.map((r, ri) => {
-                const hot = active === "r" + ri;
-                const ready = realLoaded >= REAL.length || (A.current && A.current.samples.has(r.slug));
-                return (
-                  <button key={r.slug} onClick={() => fireReal(ri)}
-                    className="pk flex flex-col items-start gap-1 rounded-sm border px-2 py-2 text-right focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-                    style={{ background: hot ? C.padHot : C.pad, borderColor: hot ? r.color : C.line2, opacity: ready ? 1 : 0.55 }}>
-                    <span className="h-1 w-full rounded-full" style={{ background: r.color, opacity: hot ? 1 : 0.55 }} />
-                    <span className="w-full truncate text-xs font-bold" style={{ color: C.bone }}>{r.name}</span>
-                    <span className="text-xs" style={{ color: C.dim2, fontSize: 10 }}>אמיתי · {r.dur.toFixed(1)}s</span>
-                  </button>
-                );
-              })}
-            </div>
-          ) : (
-          <div className="grid grid-cols-3 gap-1 p-3 pt-1 sm:grid-cols-5 md:grid-cols-6">
-            {shown.map((u) => {
-              const hot = active === u.id;
+          <div className="grid grid-cols-3 gap-1 p-3 sm:grid-cols-5 md:grid-cols-6">
+            {REAL.map((r, ri) => {
+              const hot = active === "r" + ri;
+              const ready = realLoaded >= REAL.length || (A.current && A.current.samples.has(r.slug));
               return (
-                <button key={u.id} onClick={() => fire(u.id)}
+                <button key={r.slug} onClick={() => fireReal(ri)}
                   className="pk flex flex-col items-start gap-1 rounded-sm border px-2 py-2 text-right focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-                  style={{ background: hot ? C.padHot : C.pad, borderColor: hot ? u.color : C.line2 }}>
-                  <span className="h-1 w-full rounded-full" style={{ background: u.color, opacity: hot ? 1 : 0.55 }} />
-                  <span className="w-full truncate text-xs font-bold" style={{ color: C.bone }}>{u.name}</span>
-                  <span className="text-xs" style={{ color: C.dim2, fontSize: 10 }}>{u.famName} {pad2(u.id + 1)}</span>
+                  style={{ background: hot ? C.padHot : C.pad, borderColor: hot ? r.color : C.line2, opacity: ready ? 1 : 0.55 }}>
+                  <span className="h-1 w-full rounded-full" style={{ background: r.color, opacity: hot ? 1 : 0.55 }} />
+                  <span className="w-full truncate text-xs font-bold" style={{ color: C.bone }}>{r.name}</span>
+                  <span className="text-xs" style={{ color: C.dim2, fontSize: 10 }}>{r.dur.toFixed(1)}s</span>
                 </button>
               );
             })}
-            {shown.length === 0 && (
-              <p className="col-span-full py-6 text-center text-xs" style={{ color: C.dim }}>אין תוצאות. נסה שם אחר או בחר קטגוריה.</p>
-            )}
           </div>
-          )}
+        </section>
+
+        {/* fart keyboard */}
+        <section className="mt-3 rounded-sm border" style={{ borderColor: C.line, background: C.panel }}>
+          <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2" style={{ borderColor: C.line2 }}>
+            <span className="text-xs" style={{ color: C.dim }}>קלידים</span>
+            <span className="text-xs font-bold" style={{ color: C.amber }}>
+              {NOTE_NAMES[rootIdx]} {SCALES[scaleIdx].name}
+            </span>
+            <span className="mr-auto text-xs" style={{ color: C.dim2 }}>A–L = תווים</span>
+          </div>
+
+          {/* scale + root + octave pickers */}
+          <div className="flex flex-col gap-2 px-3 py-2">
+            <div className="pk-scroll flex gap-1 overflow-x-auto">
+              {SCALES.map((s, i) => (
+                <button key={s.id} onClick={() => setScaleIdx(i)}
+                  className="pk shrink-0 rounded-sm border px-2 py-1 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                  style={btn(i === scaleIdx, C.amber)}>{s.name}</button>
+              ))}
+            </div>
+            <div className="pk-scroll flex items-center gap-1 overflow-x-auto">
+              {NOTE_NAMES.map((n, i) => (
+                <button key={n} onClick={() => setRootIdx(i)}
+                  className="pk shrink-0 rounded-sm border px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                  style={{ ...btn(i === rootIdx, C.cyan), fontSize: 10, minWidth: 28 }}>{n}</button>
+              ))}
+              <span className="mr-2 shrink-0 text-xs" style={{ color: C.dim2 }}>אוקטבה</span>
+              {[-1, 0, 1].map((o) => (
+                <button key={o} onClick={() => setOctave(o)}
+                  className="pk shrink-0 rounded-sm border px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                  style={{ ...btn(o === octave, C.bone), fontSize: 10, minWidth: 28 }}>
+                  {o > 0 ? "+1" : o}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* the keys */}
+          <div className="flex gap-1 px-3 pb-2" style={{ height: 104 }}>
+            {Array.from({ length: notes.length + 1 }).map((_, d) => {
+              const sc = SCALES[scaleIdx].steps;
+              const semi = sc[d % sc.length] + 12 * Math.floor(d / sc.length);
+              const label = NOTE_NAMES[(rootIdx + semi) % 12];
+              const isRoot = d % sc.length === 0;
+              const hot = noteHot === d;
+              return (
+                <button key={d} onMouseDown={() => playNote(d)}
+                  onTouchStart={(e) => { e.preventDefault(); playNote(d); }}
+                  className="pk flex flex-1 flex-col items-center justify-end rounded-sm border pb-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                  style={{
+                    background: hot ? C.amber : isRoot ? C.padHot : C.pad,
+                    borderColor: hot ? C.amber : isRoot ? C.amber + "66" : C.line2,
+                    color: hot ? C.bg : isRoot ? C.amber : C.dim,
+                  }}
+                  aria-label={`תו ${label}`}>
+                  <span style={{ fontSize: 11, fontWeight: 700 }}>{label}</span>
+                  <span style={{ fontSize: 9, opacity: 0.7 }}>{KEYS_ROW[d] || ""}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* which sample plays the notes */}
+          <div className="flex items-center gap-2 border-t px-3 py-2" style={{ borderColor: C.line2 }}>
+            <span className="shrink-0 text-xs" style={{ color: C.dim }}>צליל</span>
+            <div className="pk-scroll flex gap-1 overflow-x-auto">
+              {REAL.map((r, ri) => (
+                <button key={r.slug} onClick={() => setKbUnit(ri)}
+                  className="pk shrink-0 rounded-sm border px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                  style={{ ...btn(ri === kbUnit, r.color), fontSize: 10 }}>{r.name}</button>
+              ))}
+            </div>
+          </div>
         </section>
 
         <p className="mt-3 text-center text-xs" style={{ color: C.dim2 }}>
-          מקלדת: 1–9 יחידות · 0 אקראי · רווח נגן/עצור
+          מקלדת: 1–9 פליצות · 0 אקראי · A–L תווים · רווח נגן/עצור
         </p>
       </div>
     </div>
