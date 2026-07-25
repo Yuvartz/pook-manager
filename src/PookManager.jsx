@@ -231,6 +231,36 @@ const UNITS = (() => {
   return out;
 })();
 
+/* ═══ real farts — recorded samples, sliced & de-duped ══════ */
+const REAL = [
+  { slug: "real_11", name: "קטנצ'יק תת-קרקעי", dur: 0.47, color: "#6C8FD8" },
+  { slug: "real_15", name: "ארוך-נשימה", dur: 0.63, color: "#E8763B" },
+  { slug: "real_21", name: "חורק", dur: 0.80, color: "#E8763B" },
+  { slug: "real_19", name: "זועם", dur: 0.89, color: "#E8763B" },
+  { slug: "real_02", name: "מתגלגל", dur: 1.68, color: "#E8763B" },
+  { slug: "real_01", name: "ענק קרוע", dur: 2.59, color: "#E8763B" },
+  { slug: "real_05", name: "ענק בראפ", dur: 3.09, color: "#E8763B" },
+  { slug: "real_03", name: "צורם", dur: 0.91, color: "#E8D14A" },
+  { slug: "real_10", name: "חד", dur: 0.99, color: "#E8D14A" },
+  { slug: "real_13", name: "צפצפן", dur: 1.29, color: "#E8D14A" },
+  { slug: "real_07", name: "קטנצ'יק עסיסי", dur: 0.43, color: "#F0A93B" },
+  { slug: "real_17", name: "חטוף", dur: 0.56, color: "#F0A93B" },
+  { slug: "real_16", name: "מהוסס", dur: 0.60, color: "#F0A93B" },
+  { slug: "real_14", name: "מנומס", dur: 0.82, color: "#F0A93B" },
+  { slug: "real_09", name: "יבש", dur: 0.92, color: "#F0A93B" },
+  { slug: "real_20", name: "פוט", dur: 1.04, color: "#F0A93B" },
+  { slug: "real_18", name: "קלאסי", dur: 1.10, color: "#F0A93B" },
+  { slug: "real_08", name: "מערה", dur: 0.73, color: "#5FA8D8" },
+  { slug: "real_04", name: "מהדהד", dur: 0.82, color: "#5FA8D8" },
+  { slug: "real_12", name: "חמים", dur: 1.16, color: "#5FA8D8" },
+  { slug: "real_22", name: "עגול", dur: 1.17, color: "#5FA8D8" },
+  { slug: "real_06", name: "עמוק", dur: 1.19, color: "#5FA8D8" },
+  { slug: "real_24", name: "בוצי", dur: 0.70, color: "#6FBF6A" },
+  { slug: "real_23", name: "ענק רטוב", dur: 3.17, color: "#6FBF6A" },
+];
+const REAL_COLOR = "#6FBF6A";
+const sampleUrl = (slug) => `${import.meta.env.BASE_URL}farts/${slug}.mp3`;
+
 /* ═══ drum voices ═══════════════════════════════════════════ */
 function dKick(ctx, d, t, g = 1) {
   const o = ctx.createOscillator();
@@ -364,6 +394,7 @@ export default function PookManager() {
   const [quantize, setQuantize] = useState(true);
   const [recording, setRecording] = useState(false);
   const [loop, setLoop] = useState([]);
+  const [realLoaded, setRealLoaded] = useState(0);
 
   const A = useRef(null);
   const raf = useRef(null);
@@ -391,14 +422,40 @@ export default function PookManager() {
     master.connect(limiter);
     limiter.connect(an);
     an.connect(ctx.destination);
-    A.current = { ctx, master, fart, drums, an, data: new Uint8Array(an.fftSize), bufs: { white: makeNoise(ctx, false), brown: makeNoise(ctx, true) } };
+    A.current = { ctx, master, fart, drums, an, data: new Uint8Array(an.fftSize), bufs: { white: makeNoise(ctx, false), brown: makeNoise(ctx, true) }, samples: new Map(), loading: false };
     A.current.fart.gain.value = fartVol;
     A.current.drums.gain.value = drumVol;
     return A.current;
   }, [fartVol, drumVol]);
 
+  /* ── load recorded fart samples once (first user gesture) ── */
+  const loadSamples = useCallback(async () => {
+    const a = A.current;
+    if (!a || a.loading || a.samples.size === REAL.length) return;
+    a.loading = true;
+    let done = 0;
+    await Promise.all(
+      REAL.map(async (r) => {
+        try {
+          const res = await fetch(sampleUrl(r.slug));
+          const arr = await res.arrayBuffer();
+          const buf = await a.ctx.decodeAudioData(arr);
+          a.samples.set(r.slug, buf);
+        } catch (e) {
+          /* leave missing; pad will just no-op */
+        } finally {
+          done++;
+          setRealLoaded(done);
+        }
+      })
+    );
+    a.loading = false;
+  }, []);
+
   useEffect(() => { if (A.current) A.current.fart.gain.value = fartVol; }, [fartVol]);
   useEffect(() => { if (A.current) A.current.drums.gain.value = drumVol; }, [drumVol]);
+  /* warm up recorded samples as soon as the real tab is opened */
+  useEffect(() => { if (tab === "real" && A.current) loadSamples(); }, [tab, loadSamples]);
 
   const meter = useCallback(() => {
     const a = A.current;
@@ -442,6 +499,32 @@ export default function PookManager() {
     list.forEach((b) => burst(ctx, dest, { ...u.p, dur: u.p.dur * (b.s ?? 1), gain: u.p.gain * (b.g ?? 1) }, when + b.d, bufs));
   }, [init]);
 
+  /* play a recorded sample through the fart bus */
+  const playSample = useCallback((idx, when) => {
+    const a = init();
+    const r = REAL[idx];
+    if (!r) return;
+    const fireBuf = (buf) => {
+      const src = a.ctx.createBufferSource();
+      src.buffer = buf;
+      src.playbackRate.value = rnd(0.97, 1.04);   // subtle variation each hit
+      const g = a.ctx.createGain();
+      g.gain.value = 0.92;
+      src.connect(g);
+      g.connect(a.fart);
+      src.start(Math.max(when, a.ctx.currentTime));
+    };
+    const buf = a.samples.get(r.slug);
+    if (buf) { fireBuf(buf); return; }
+    /* not decoded yet — fetch just this one, then play immediately */
+    loadSamples();
+    fetch(sampleUrl(r.slug))
+      .then((res) => res.arrayBuffer())
+      .then((arr) => a.ctx.decodeAudioData(arr))
+      .then((b) => { a.samples.set(r.slug, b); fireBuf(b); })
+      .catch(() => {});
+  }, [init, loadSamples]);
+
   /* ── transport ── */
   const stepDur = useCallback(() => 60 / S.current.bpm / 4, []);
 
@@ -462,14 +545,14 @@ export default function PookManager() {
       if (beat.o && beat.o[i] === "o") dHat(ctx, drums, t, bufs, true, 0.22);
       if (beat.p && beat.p[i] === "x") dPerc(ctx, drums, t, bufs);
       if (beat.click && beat.click[i] === "x") dClick(ctx, drums, t, i === 0 ? 0.7 : 0.4);
-      S.current.loop.forEach((h) => { if (h.step === i) voice(h.u, t); });
+      S.current.loop.forEach((h) => { if (h.step === i) (h.real != null ? playSample(h.real, t) : voice(h.u, t)); });
       const shown = i;
       setTimeout(() => setStep(shown), Math.max(0, (T.current.next - ctx.currentTime) * 1000));
       T.current.next += sd;
       T.current.step = (i + 1) % 16;
       if (T.current.step === 0) T.current.start = T.current.next;
     }
-  }, [stepDur, voice]);
+  }, [stepDur, voice, playSample]);
 
   const stop = useCallback(() => {
     if (T.current.timer) clearInterval(T.current.timer);
@@ -537,6 +620,39 @@ export default function PookManager() {
     flash.current = setTimeout(() => setActive(null), 160);
   }, [init, meter, stepDur, voice]);
 
+  /* ── fire a recorded (real) fart — same quantize/record path ── */
+  const fireReal = useCallback((idx) => {
+    const a = init();
+    const { ctx } = a;
+    if (ctx.state === "suspended") ctx.resume();
+    setArmed(true);
+    loadSamples();
+    if (!raf.current) raf.current = requestAnimationFrame(meter);
+
+    const sd = stepDur();
+    const mod16 = (n) => ((n % 16) + 16) % 16;
+    let when = ctx.currentTime + 0.02;
+    let landStep = null;
+    if (S.current.playing) {
+      const elapsed = ctx.currentTime - T.current.start;
+      if (S.current.quantize) {
+        const k = Math.ceil(elapsed / sd);
+        when = T.current.start + k * sd;
+        landStep = mod16(k);
+      } else {
+        landStep = mod16(Math.round(elapsed / sd));
+      }
+    }
+    playSample(idx, when);
+    if (S.current.recording && landStep !== null) {
+      setLoop((l) => (l.length > 31 ? l : [...l, { step: landStep, real: idx, k: Date.now() + Math.random() }]));
+    }
+    setTotal((n) => n + 1);
+    setActive("r" + idx);
+    if (flash.current) clearTimeout(flash.current);
+    flash.current = setTimeout(() => setActive(null), 160);
+  }, [init, meter, stepDur, playSample, loadSamples]);
+
   useEffect(() => {
     const onKey = (e) => {
       if (e.target && e.target.tagName === "INPUT") return;
@@ -578,7 +694,7 @@ export default function PookManager() {
         <header className="flex items-end justify-between border-b pb-3" style={{ borderColor: C.line }}>
           <div>
             <h1 className="text-xl font-bold sm:text-3xl" style={{ letterSpacing: "0.16em" }}>POOK&nbsp;MANAGER</h1>
-            <p className="mt-1 text-xs" style={{ color: C.dim }}>תחנת פליטות · 100 יחידות · 12 מקצבים</p>
+            <p className="mt-1 text-xs" style={{ color: C.dim }}>תחנת פליטות · 100 יחידות + 24 אמיתיות · 12 מקצבים</p>
           </div>
           <div className="flex items-center gap-2 text-xs" style={{ color: armed ? C.cyan : C.dim }}>
             <span className="inline-block h-2 w-2 rounded-full" style={{ background: armed ? C.cyan : C.line, boxShadow: armed ? `0 0 8px ${C.cyan}` : "none" }} />
@@ -629,7 +745,7 @@ export default function PookManager() {
                   <div className="h-6 rounded-sm border" style={{ background: on ? C.amber : i % 4 === 0 ? C.pad : C.panel2, borderColor: on ? C.amber : C.line2 }} />
                   <div className="mt-1 flex justify-center gap-px" style={{ height: 4 }}>
                     {hits.slice(0, 3).map((h) => (
-                      <span key={h.k} className="h-1 w-1 rounded-full" style={{ background: UNITS[h.u].color }} />
+                      <span key={h.k} className="h-1 w-1 rounded-full" style={{ background: h.real != null ? REAL[h.real].color : UNITS[h.u].color }} />
                     ))}
                   </div>
                 </div>
@@ -691,11 +807,13 @@ export default function PookManager() {
         {/* library */}
         <section className="mt-3 rounded-sm border" style={{ borderColor: C.line, background: C.panel }}>
           <div className="flex items-center gap-2 border-b px-3 py-2" style={{ borderColor: C.line2 }}>
-            <span className="text-xs" style={{ color: C.dim }}>ספריית צלילים</span>
-            <span className="text-xs" style={{ color: C.dim2 }}>{shown.length}/100</span>
-            <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="חיפוש"
-              className="mr-auto w-24 rounded-sm border px-2 py-1 text-xs focus:outline-none sm:w-40"
-              style={{ background: C.panel2, borderColor: C.line, color: C.bone }} />
+            <span className="text-xs" style={{ color: C.dim }}>{tab === "real" ? "פליצות אמיתיות" : "ספריית צלילים"}</span>
+            <span className="text-xs" style={{ color: C.dim2 }}>{tab === "real" ? `${REAL.length} דגומות${realLoaded < REAL.length ? " · טוען…" : ""}` : `${shown.length}/100`}</span>
+            {tab !== "real" && (
+              <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="חיפוש"
+                className="mr-auto w-24 rounded-sm border px-2 py-1 text-xs focus:outline-none sm:w-40"
+                style={{ background: C.panel2, borderColor: C.line, color: C.bone }} />
+            )}
           </div>
 
           <div className="pk-scroll flex gap-1 overflow-x-auto px-3 py-2">
@@ -707,8 +825,28 @@ export default function PookManager() {
                 className="pk shrink-0 rounded-sm border px-2 py-1 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
                 style={btn(tab === f.id, f.color)}>{f.name}</button>
             ))}
+            <button onClick={() => setTab("real")}
+              className="pk shrink-0 rounded-sm border px-2 py-1 text-xs font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+              style={btn(tab === "real", REAL_COLOR)}>★ אמיתי</button>
           </div>
 
+          {tab === "real" ? (
+            <div className="grid grid-cols-3 gap-1 p-3 pt-1 sm:grid-cols-5 md:grid-cols-6">
+              {REAL.map((r, ri) => {
+                const hot = active === "r" + ri;
+                const ready = realLoaded >= REAL.length || (A.current && A.current.samples.has(r.slug));
+                return (
+                  <button key={r.slug} onClick={() => fireReal(ri)}
+                    className="pk flex flex-col items-start gap-1 rounded-sm border px-2 py-2 text-right focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                    style={{ background: hot ? C.padHot : C.pad, borderColor: hot ? r.color : C.line2, opacity: ready ? 1 : 0.55 }}>
+                    <span className="h-1 w-full rounded-full" style={{ background: r.color, opacity: hot ? 1 : 0.55 }} />
+                    <span className="w-full truncate text-xs font-bold" style={{ color: C.bone }}>{r.name}</span>
+                    <span className="text-xs" style={{ color: C.dim2, fontSize: 10 }}>אמיתי · {r.dur.toFixed(1)}s</span>
+                  </button>
+                );
+              })}
+            </div>
+          ) : (
           <div className="grid grid-cols-3 gap-1 p-3 pt-1 sm:grid-cols-5 md:grid-cols-6">
             {shown.map((u) => {
               const hot = active === u.id;
@@ -726,6 +864,7 @@ export default function PookManager() {
               <p className="col-span-full py-6 text-center text-xs" style={{ color: C.dim }}>אין תוצאות. נסה שם אחר או בחר קטגוריה.</p>
             )}
           </div>
+          )}
         </section>
 
         <p className="mt-3 text-center text-xs" style={{ color: C.dim2 }}>
