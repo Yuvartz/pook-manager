@@ -68,15 +68,23 @@ const sampleUrl = (slug) => `${import.meta.env.BASE_URL}farts/${slug}.mp3`;
 /* ═══ music theory — scales for the fart keyboard ═══════════ */
 const NOTE_NAMES = ["C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B"];
 const SCALES = [
-  { id: "major", name: "מז'ור", steps: [0, 2, 4, 5, 7, 9, 11] },
-  { id: "minor", name: "מינור", steps: [0, 2, 3, 5, 7, 8, 10] },
-  { id: "penta", name: "פנטטוני", steps: [0, 3, 5, 7, 10] },
-  { id: "blues", name: "בלוז", steps: [0, 3, 5, 6, 7, 10] },
-  { id: "dorian", name: "דוריאן", steps: [0, 2, 3, 5, 7, 9, 10] },
-  { id: "harmonic", name: "מזרחי", steps: [0, 1, 4, 5, 7, 8, 11] },
+  { id: "major",    name: "מז'ור",    emo: "☀️", steps: [0, 2, 4, 5, 7, 9, 11] },
+  { id: "minor",    name: "מינור",    emo: "🌙", steps: [0, 2, 3, 5, 7, 8, 10] },
+  { id: "penta",    name: "פנטטוני",  emo: "🎋", steps: [0, 3, 5, 7, 10] },
+  { id: "blues",    name: "בלוז",     emo: "🎷", steps: [0, 3, 5, 6, 7, 10] },
+  { id: "dorian",   name: "דוריאן",   emo: "🍃", steps: [0, 2, 3, 5, 7, 9, 10] },
+  { id: "harmonic", name: "מזרחי",    emo: "🐪", steps: [0, 1, 4, 5, 7, 8, 11] },
 ];
-const KEYS_ROW = ["a", "s", "d", "f", "g", "h", "j", "k", "l", ";", "'"];
-/* midi 60 = C4; the sample's own pitch is treated as the root */
+
+/* one piano octave + the tonic on top; semitone offset from the sample's own pitch */
+const WHITE = [0, 2, 4, 5, 7, 9, 11, 12];
+/* black keys sit between whites — `after` is the index of the white key they follow */
+const BLACK = [
+  { semi: 1, after: 0 }, { semi: 3, after: 1 },
+  { semi: 6, after: 3 }, { semi: 8, after: 4 }, { semi: 10, after: 5 },
+];
+const KEYS_ROW = ["a", "s", "d", "f", "g", "h", "j", "k"];
+const BLACK_KEYS_ROW = { 1: "w", 3: "e", 6: "t", 8: "y", 10: "u" };
 const semisToRate = (s) => Math.pow(2, s / 12);
 
 /* ═══ drum voices ═══════════════════════════════════════════ */
@@ -225,11 +233,9 @@ export default function PookManager() {
   const [recording, setRecording] = useState(false);
   const [loop, setLoop] = useState([]);
   const [realLoaded, setRealLoaded] = useState(0);
-  /* fart keyboard */
-  const [kbUnit, setKbUnit] = useState(15);        // which sample is "the instrument"
+  /* fart keyboard — plays whichever pad is currently selected */
+  const [kbUnit, setKbUnit] = useState(15);
   const [scaleIdx, setScaleIdx] = useState(0);
-  const [rootIdx, setRootIdx] = useState(0);       // 0 = C
-  const [octave, setOctave] = useState(0);         // -1 / 0 / +1
   const [noteHot, setNoteHot] = useState(null);
 
   const A = useRef(null);
@@ -432,16 +438,12 @@ export default function PookManager() {
     flash.current = setTimeout(() => setActive(null), 160);
   }, [init, meter, stepDur, playSample, loadSamples]);
 
-  /* ── the fart keyboard: play a scale degree ── */
-  const notes = SCALES[scaleIdx].steps;
-  const playNote = useCallback((degree) => {
-    const sc = SCALES[scaleIdx].steps;
-    const oct = Math.floor(degree / sc.length);
-    const semis = rootIdx + sc[degree % sc.length] + 12 * (oct + octave);
-    fireReal(kbUnit, semis);
-    setNoteHot(degree);
-    setTimeout(() => setNoteHot((d) => (d === degree ? null : d)), 150);
-  }, [scaleIdx, rootIdx, octave, kbUnit, fireReal]);
+  /* ── the fart keyboard: play one piano key (semitones above the sample) ── */
+  const playNote = useCallback((semi) => {
+    fireReal(kbUnit, semi);
+    setNoteHot(semi);
+    setTimeout(() => setNoteHot((s) => (s === semi ? null : s)), 150);
+  }, [kbUnit, fireReal]);
 
   useEffect(() => {
     const onKey = (e) => {
@@ -450,8 +452,11 @@ export default function PookManager() {
       if (e.repeat) return;
       const n = parseInt(e.key, 10);
       if (!isNaN(n) && e.key.length === 1) { fireReal(n === 0 ? Math.floor(Math.random() * REAL.length) : Math.min(n - 1, REAL.length - 1)); return; }
-      const ki = KEYS_ROW.indexOf(e.key.toLowerCase());
-      if (ki !== -1) playNote(ki);
+      const key = e.key.toLowerCase();
+      const wi = KEYS_ROW.indexOf(key);
+      if (wi !== -1) { playNote(WHITE[wi]); return; }
+      const bs = Object.keys(BLACK_KEYS_ROW).find((s) => BLACK_KEYS_ROW[s] === key);
+      if (bs) playNote(Number(bs));
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
@@ -491,7 +496,7 @@ export default function PookManager() {
         <header className="flex items-end justify-between border-b pb-3" style={{ borderColor: C.line }}>
           <div>
             <h1 className="text-xl font-bold sm:text-3xl" style={{ letterSpacing: "0.16em" }}>POOK&nbsp;MANAGER</h1>
-            <p className="mt-1 text-xs" style={{ color: C.dim }}>תחנת פליטות · 24 פליצות אמיתיות · 12 מקצבים</p>
+            <p className="mt-1 text-xs" style={{ color: C.dim }}>תחנת פליטות · 24 פליצות · 12 מקצבים</p>
           </div>
           <div className="flex items-center gap-2 text-xs" style={{ color: armed ? C.cyan : C.dim }}>
             <span className="inline-block h-2 w-2 rounded-full" style={{ background: armed ? C.cyan : C.line, boxShadow: armed ? `0 0 8px ${C.cyan}` : "none" }} />
@@ -502,7 +507,7 @@ export default function PookManager() {
         {/* meter */}
         <section className="mt-3 rounded-sm border p-3" style={{ borderColor: C.line, background: C.panel }}>
           <div className="flex items-baseline justify-between text-xs" style={{ color: C.dim }}>
-            <span>לחץ מוצא</span>
+            <span>עוצמה</span>
             <span>סה״כ <b style={{ color: C.amber }}>{total}</b></span>
           </div>
           <div className="mt-2 flex gap-px" aria-hidden="true">
@@ -517,7 +522,7 @@ export default function PookManager() {
         {/* rhythm section */}
         <section className="mt-3 rounded-sm border" style={{ borderColor: C.line, background: C.panel }}>
           <div className="flex items-center gap-2 border-b px-3 py-2" style={{ borderColor: C.line2 }}>
-            <span className="text-xs" style={{ color: C.dim }}>מקצב</span>
+            <span className="text-sm font-bold" style={{ color: C.bone, letterSpacing: "0.12em" }}>מקצב</span>
             <span className="text-xs font-bold" style={{ color: C.cyan }}>{beat.name}</span>
             <span className="mr-auto text-xs" style={{ color: C.dim2 }}>רווח = נגן/עצור</span>
           </div>
@@ -599,14 +604,14 @@ export default function PookManager() {
           <button onClick={() => fireReal(Math.floor(Math.random() * REAL.length))}
             className="pk rounded-sm border px-4 py-2 text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
             style={{ borderColor: C.amber, color: C.amber }}>
-            אקראי
+            נאד בהפתעה
           </button>
         </section>
 
         {/* library — real farts only */}
         <section className="mt-3 rounded-sm border" style={{ borderColor: C.line, background: C.panel }}>
           <div className="flex items-center gap-2 border-b px-3 py-2" style={{ borderColor: C.line2 }}>
-            <span className="text-xs" style={{ color: C.dim }}>פליצות אמיתיות</span>
+            <span className="text-xs" style={{ color: C.dim }}>פליצות</span>
             <span className="mr-auto text-xs" style={{ color: C.dim2 }}>
               {REAL.length} דגומות{realLoaded > 0 && realLoaded < REAL.length ? " · טוען…" : ""}
             </span>
@@ -617,94 +622,109 @@ export default function PookManager() {
               const hot = active === "r" + ri;
               const ready = realLoaded >= REAL.length || (A.current && A.current.samples.has(r.slug));
               return (
-                <button key={r.slug} onClick={() => fireReal(ri)}
+                <button key={r.slug} onClick={() => { fireReal(ri); setKbUnit(ri); }}
                   className="pk flex flex-col items-start gap-1 rounded-sm border px-2 py-2 text-right focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-                  style={{ background: hot ? C.padHot : C.pad, borderColor: hot ? r.color : C.line2, opacity: ready ? 1 : 0.55 }}>
-                  <span className="h-1 w-full rounded-full" style={{ background: r.color, opacity: hot ? 1 : 0.55 }} />
+                  style={{
+                    background: hot ? C.padHot : C.pad,
+                    borderColor: hot ? r.color : ri === kbUnit ? r.color + "AA" : C.line2,
+                    opacity: ready ? 1 : 0.55,
+                  }}
+                  aria-pressed={ri === kbUnit}>
+                  <span className="h-1 w-full rounded-full" style={{ background: r.color, opacity: hot || ri === kbUnit ? 1 : 0.55 }} />
                   <span className="w-full truncate text-xs font-bold" style={{ color: C.bone }}>{r.name}</span>
-                  <span className="text-xs" style={{ color: C.dim2, fontSize: 10 }}>{r.dur.toFixed(1)}s</span>
+                  <span className="flex w-full items-center justify-between text-xs" style={{ color: C.dim2, fontSize: 10 }}>
+                    {r.dur.toFixed(1)}s
+                    {ri === kbUnit && <span style={{ color: r.color }}>♪</span>}
+                  </span>
                 </button>
               );
             })}
           </div>
         </section>
 
-        {/* fart keyboard */}
+        {/* piano */}
         <section className="mt-3 rounded-sm border" style={{ borderColor: C.line, background: C.panel }}>
           <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2" style={{ borderColor: C.line2 }}>
-            <span className="text-xs" style={{ color: C.dim }}>קלידים</span>
-            <span className="text-xs font-bold" style={{ color: C.amber }}>
-              {NOTE_NAMES[rootIdx]} {SCALES[scaleIdx].name}
-            </span>
-            <span className="mr-auto text-xs" style={{ color: C.dim2 }}>A–L = תווים</span>
+            <span className="text-sm font-bold" style={{ color: C.bone, letterSpacing: "0.12em" }}>קלידים</span>
+            <span className="text-xs font-bold" style={{ color: REAL[kbUnit].color }}>{REAL[kbUnit].name}</span>
+            <span className="mr-auto text-xs" style={{ color: C.dim2 }}>בחר פליצה למעלה</span>
           </div>
 
-          {/* scale + root + octave pickers */}
-          <div className="flex flex-col gap-2 px-3 py-2">
+          {/* scale picker — emoji only */}
+          <div className="flex items-center gap-2 px-3 py-2">
+            <span className="shrink-0 text-xs" style={{ color: C.dim }}>סולם</span>
             <div className="pk-scroll flex gap-1 overflow-x-auto">
               {SCALES.map((s, i) => (
                 <button key={s.id} onClick={() => setScaleIdx(i)}
-                  className="pk shrink-0 rounded-sm border px-2 py-1 text-xs focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-                  style={btn(i === scaleIdx, C.amber)}>{s.name}</button>
-              ))}
-            </div>
-            <div className="pk-scroll flex items-center gap-1 overflow-x-auto">
-              {NOTE_NAMES.map((n, i) => (
-                <button key={n} onClick={() => setRootIdx(i)}
                   className="pk shrink-0 rounded-sm border px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-                  style={{ ...btn(i === rootIdx, C.cyan), fontSize: 10, minWidth: 28 }}>{n}</button>
-              ))}
-              <span className="mr-2 shrink-0 text-xs" style={{ color: C.dim2 }}>אוקטבה</span>
-              {[-1, 0, 1].map((o) => (
-                <button key={o} onClick={() => setOctave(o)}
-                  className="pk shrink-0 rounded-sm border px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-                  style={{ ...btn(o === octave, C.bone), fontSize: 10, minWidth: 28 }}>
-                  {o > 0 ? "+1" : o}
+                  style={{ ...btn(i === scaleIdx, C.amber), fontSize: 17, lineHeight: 1.15, minWidth: 38 }}
+                  title={s.name} aria-label={s.name} aria-pressed={i === scaleIdx}>
+                  {s.emo}
                 </button>
               ))}
             </div>
           </div>
 
-          {/* the keys */}
-          <div className="flex gap-1 px-3 pb-2" style={{ height: 104 }}>
-            {Array.from({ length: notes.length + 1 }).map((_, d) => {
-              const sc = SCALES[scaleIdx].steps;
-              const semi = sc[d % sc.length] + 12 * Math.floor(d / sc.length);
-              const label = NOTE_NAMES[(rootIdx + semi) % 12];
-              const isRoot = d % sc.length === 0;
-              const hot = noteHot === d;
-              return (
-                <button key={d} onMouseDown={() => playNote(d)}
-                  onTouchStart={(e) => { e.preventDefault(); playNote(d); }}
-                  className="pk flex flex-1 flex-col items-center justify-end rounded-sm border pb-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-                  style={{
-                    background: hot ? C.amber : isRoot ? C.padHot : C.pad,
-                    borderColor: hot ? C.amber : isRoot ? C.amber + "66" : C.line2,
-                    color: hot ? C.bg : isRoot ? C.amber : C.dim,
-                  }}
-                  aria-label={`תו ${label}`}>
-                  <span style={{ fontSize: 11, fontWeight: 700 }}>{label}</span>
-                  <span style={{ fontSize: 9, opacity: 0.7 }}>{KEYS_ROW[d] || ""}</span>
-                </button>
-              );
-            })}
-          </div>
+          {/* the piano — white keys with black keys straddling them */}
+          <div className="px-3 pb-3">
+            <div className="relative select-none" style={{ height: 128 }}>
+              {/* white keys */}
+              <div className="flex h-full gap-1">
+                {WHITE.map((semi, wi) => {
+                  const inScale = SCALES[scaleIdx].steps.includes(semi % 12);
+                  const hot = noteHot === semi;
+                  return (
+                    <button key={semi} onMouseDown={() => playNote(semi)}
+                      onTouchStart={(e) => { e.preventDefault(); playNote(semi); }}
+                      className="pk flex flex-1 flex-col items-center justify-end rounded-b-sm pb-2 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                      style={{
+                        background: hot ? C.amber : inScale ? C.bone : "#8D9691",
+                        borderWidth: "0 1px 1px 1px",
+                        borderStyle: "solid",
+                        borderColor: hot ? C.amber : C.line,
+                        boxShadow: hot ? `inset 0 -6px 12px ${C.amber}` : "inset 0 -7px 9px rgba(0,0,0,0.16)",
+                        color: "#4A5450",
+                      }}
+                      aria-label={`תו ${NOTE_NAMES[semi % 12]}`}>
+                      <span style={{ fontSize: 10, fontWeight: 700, opacity: 0.75 }}>{KEYS_ROW[wi]}</span>
+                    </button>
+                  );
+                })}
+              </div>
 
-          {/* which sample plays the notes */}
-          <div className="flex items-center gap-2 border-t px-3 py-2" style={{ borderColor: C.line2 }}>
-            <span className="shrink-0 text-xs" style={{ color: C.dim }}>צליל</span>
-            <div className="pk-scroll flex gap-1 overflow-x-auto">
-              {REAL.map((r, ri) => (
-                <button key={r.slug} onClick={() => setKbUnit(ri)}
-                  className="pk shrink-0 rounded-sm border px-2 py-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
-                  style={{ ...btn(ri === kbUnit, r.color), fontSize: 10 }}>{r.name}</button>
-              ))}
+              {/* black keys */}
+              <div className="pointer-events-none absolute inset-0">
+                {BLACK.map((b) => {
+                  const inScale = SCALES[scaleIdx].steps.includes(b.semi % 12);
+                  const hot = noteHot === b.semi;
+                  /* sit on the seam between two white keys (RTL: measure from the right) */
+                  const unit = 100 / WHITE.length;
+                  const right = `calc(${(b.after + 1) * unit}% - ${unit * 0.29}%)`;
+                  return (
+                    <button key={b.semi} onMouseDown={() => playNote(b.semi)}
+                      onTouchStart={(e) => { e.preventDefault(); playNote(b.semi); }}
+                      className="pk pointer-events-auto absolute top-0 flex flex-col items-center justify-end rounded-b-sm pb-1 focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
+                      style={{
+                        right, width: `${unit * 0.58}%`, height: "62%",
+                        background: hot ? C.amber : inScale ? "#1C2B27" : "#0C1413",
+                        borderWidth: "0 1px 1px 1px",
+                        borderStyle: "solid",
+                        borderColor: hot ? C.amber : "#000",
+                        boxShadow: hot ? `0 0 10px ${C.amber}99` : "0 3px 6px rgba(0,0,0,0.55)",
+                        color: hot ? C.bg : C.dim2,
+                      }}
+                      aria-label={`תו ${NOTE_NAMES[b.semi % 12]}`}>
+                      <span style={{ fontSize: 9, fontWeight: 700 }}>{BLACK_KEYS_ROW[b.semi]}</span>
+                    </button>
+                  );
+                })}
+              </div>
             </div>
           </div>
         </section>
 
         <p className="mt-3 text-center text-xs" style={{ color: C.dim2 }}>
-          מקלדת: 1–9 פליצות · 0 אקראי · A–L תווים · רווח נגן/עצור
+          מקלדת: 1–9 פליצות · 0 נאד בהפתעה · A–K קלידים לבנים · W/E/T/Y/U שחורים · רווח נגן/עצור
         </p>
       </div>
     </div>
