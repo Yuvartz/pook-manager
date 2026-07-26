@@ -634,11 +634,18 @@ export default function PookManager() {
           </div>
         </header>
 
-        {/* meter */}
+        {/* meter + master song capture */}
         <section className="mt-3 rounded-sm border p-3" style={{ borderColor: C.line, background: C.panel }}>
-          <div className="flex items-baseline justify-between text-xs" style={{ color: C.dim }}>
+          <div className="flex items-center gap-2 text-xs" style={{ color: C.dim }}>
             <span>עוצמה</span>
-            <span>סה״כ <b style={{ color: C.amber }}>{total}</b></span>
+            <span className="mr-auto">סה״כ <b style={{ color: C.amber }}>{total}</b></span>
+            <button onClick={toggleBounce}
+              className={`pk flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-xs font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${bounceSec >= 0 ? "pk-recording" : ""}`}
+              style={btn(bounceSec >= 0, C.rec)} aria-pressed={bounceSec >= 0}
+              title="לוכד את כל הערוצים — פליצות, תופים וקולות — ומוריד קובץ WAV">
+              <IconDownload />
+              {bounceSec >= 0 ? `מקליט שיר ${pad2(Math.floor(bounceSec / 60))}:${pad2(bounceSec % 60)}` : "הקלט שיר"}
+            </button>
           </div>
           <div className="mt-2 flex gap-px" aria-hidden="true">
             {Array.from({ length: segs }).map((_, i) => {
@@ -708,13 +715,6 @@ export default function PookManager() {
               className="pk flex items-center gap-2 rounded-sm border px-3 py-2 text-sm focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
               style={btn(quantize, C.amber)} aria-pressed={quantize}>
               <IconGrid /> יישור לביט
-            </button>
-            <button onClick={toggleBounce}
-              className={`pk flex items-center gap-2 rounded-sm border px-3 py-2 text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${bounceSec >= 0 ? "pk-recording" : ""}`}
-              style={btn(bounceSec >= 0, C.rec)} aria-pressed={bounceSec >= 0}
-              title="לוכד את כל מה שנשמע ומוריד קובץ WAV">
-              <IconDownload />
-              {bounceSec >= 0 ? `מקליט שיר ${pad2(Math.floor(bounceSec / 60))}:${pad2(bounceSec % 60)}` : "הקלט שיר"}
             </button>
             <label className="flex flex-1 items-center gap-2 text-xs" style={{ color: C.dim, minWidth: 150 }}>
               {bpm} BPM
