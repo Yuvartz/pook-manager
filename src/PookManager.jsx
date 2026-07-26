@@ -19,6 +19,7 @@ const C = {
 
 /* ═══ helpers ═══════════════════════════════════════════════ */
 const rnd = (a, b) => a + Math.random() * (b - a);
+const pad2 = (n) => String(n).padStart(2, "0");
 
 function makeNoise(ctx, brown) {
   const len = ctx.sampleRate * 2;
@@ -216,6 +217,31 @@ const IconStop = () => <Ico fill="currentColor" d={<rect x="5.5" y="5.5" width="
 const IconRec = () => <Ico fill="currentColor" d={<circle cx="12" cy="12" r="6.5" stroke="none" />} />;
 const IconTrash = () => <Ico d={<><path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13" /></>} />;
 const IconGrid = () => <Ico d={<><path d="M4 9h16M4 15h16M9 4v16M15 4v16" /></>} />;
+const IconMic = () => <Ico d={<><rect x="9" y="3" width="6" height="11" rx="3" /><path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M8.5 21h7" /></>} />;
+const IconDownload = () => <Ico d={<><path d="M12 3v11m0 0 4.5-4.5M12 14 7.5 9.5M4 17v2.5h16V17" /></>} />;
+
+/* ── 16-bit PCM WAV from captured float chunks ── */
+function encodeWav(chunksL, chunksR, sampleRate) {
+  const len = chunksL.reduce((n, c) => n + c.length, 0);
+  const buf = new ArrayBuffer(44 + len * 4);
+  const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + len * 4, true); str(8, "WAVE");
+  str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true);
+  v.setUint16(22, 2, true); v.setUint32(24, sampleRate, true);
+  v.setUint32(28, sampleRate * 4, true); v.setUint16(32, 4, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, len * 4, true);
+  let o = 44;
+  for (let c = 0; c < chunksL.length; c++) {
+    const L = chunksL[c], R = chunksR[c];
+    for (let i = 0; i < L.length; i++) {
+      v.setInt16(o, Math.max(-1, Math.min(1, L[i])) * 0x7fff, true);
+      v.setInt16(o + 2, Math.max(-1, Math.min(1, R[i])) * 0x7fff, true);
+      o += 4;
+    }
+  }
+  return new Blob([buf], { type: "audio/wav" });
+}
 
 /* ── scale icons: gpt-image-1 stickers in public/scales/ — a cheeky
    peach-bottom letting one rip, a different mood per scale ── */
@@ -241,13 +267,23 @@ export default function PookManager() {
   const [kbUnit, setKbUnit] = useState(15);
   const [scaleIdx, setScaleIdx] = useState(0);
   const [noteHot, setNoteHot] = useState(null);
+  /* mic voices + master bounce */
+  const [voices, setVoices] = useState([]);        // {slug, name, dur, color}
+  const [micRec, setMicRec] = useState(false);
+  const [micErr, setMicErr] = useState(null);
+  const [bounceSec, setBounceSec] = useState(-1);  // -1 = off
 
   const A = useRef(null);
   const raf = useRef(null);
   const flash = useRef(null);
   const T = useRef({ next: 0, step: 0, start: 0, timer: null });
+  const mic = useRef(null);                        // {recorder, stream}
+  const bounce = useRef(null);                     // {sp, mute, L, R, timer}
   const S = useRef({});
-  S.current = { bpm, beatIdx, drumVol, loop, playing, recording, quantize };
+  S.current = { bpm, beatIdx, drumVol, loop, playing, recording, quantize, voices };
+
+  /* a pad is either a shipped sample or a mic voice */
+  const padAt = (i) => (i < REAL.length ? REAL[i] : S.current.voices[i - REAL.length]);
 
   /* ── engine ── */
   const init = useCallback(() => {
@@ -268,7 +304,7 @@ export default function PookManager() {
     master.connect(limiter);
     limiter.connect(an);
     an.connect(ctx.destination);
-    A.current = { ctx, master, fart, drums, an, data: new Uint8Array(an.fftSize), bufs: { white: makeNoise(ctx, false), brown: makeNoise(ctx, true) }, samples: new Map(), loading: false };
+    A.current = { ctx, master, limiter, fart, drums, an, data: new Uint8Array(an.fftSize), bufs: { white: makeNoise(ctx, false), brown: makeNoise(ctx, true) }, samples: new Map(), loading: false };
     A.current.fart.gain.value = fartVol;
     A.current.drums.gain.value = drumVol;
     return A.current;
@@ -321,7 +357,7 @@ export default function PookManager() {
      semis != null → pitched (keyboard); null → natural pitch with a touch of jitter */
   const playSample = useCallback((idx, when, semis = null) => {
     const a = init();
-    const r = REAL[idx];
+    const r = padAt(idx);
     if (!r) return;
     const fireBuf = (buf) => {
       const src = a.ctx.createBufferSource();
@@ -336,6 +372,7 @@ export default function PookManager() {
     };
     const buf = a.samples.get(r.slug);
     if (buf) { fireBuf(buf); return; }
+    if (idx >= REAL.length) return;              // mic voices are always pre-decoded
     /* not decoded yet — fetch just this one, then play immediately */
     loadSamples();
     fetch(sampleUrl(r.slug))
@@ -344,6 +381,93 @@ export default function PookManager() {
       .then((b) => { a.samples.set(r.slug, b); fireBuf(b); })
       .catch(() => {});
   }, [init, loadSamples]);
+
+  /* ── mic: record a voice clip, it becomes a pad ── */
+  const toggleMic = useCallback(async () => {
+    if (mic.current) { mic.current.recorder.stop(); return; }
+    if (S.current.voices.length >= 6) return;
+    const a = init();
+    if (a.ctx.state === "suspended") a.ctx.resume();
+    setArmed(true);
+    setMicErr(null);
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    } catch {
+      setMicErr("אין גישה למיקרופון");
+      return;
+    }
+    const recorder = new MediaRecorder(stream);
+    const chunks = [];
+    recorder.ondataavailable = (e) => chunks.push(e.data);
+    recorder.onstop = async () => {
+      stream.getTracks().forEach((t) => t.stop());
+      mic.current = null;
+      setMicRec(false);
+      try {
+        const arr = await new Blob(chunks).arrayBuffer();
+        let buf = await a.ctx.decodeAudioData(arr);
+        /* cap at 8s so a forgotten mic doesn't become a monster pad */
+        if (buf.duration > 8) {
+          const cut = a.ctx.createBuffer(buf.numberOfChannels, a.ctx.sampleRate * 8, a.ctx.sampleRate);
+          for (let c = 0; c < buf.numberOfChannels; c++)
+            cut.copyToChannel(buf.getChannelData(c).slice(0, cut.length), c);
+          buf = cut;
+        }
+        setVoices((v) => {
+          if (v.length >= 6) return v;
+          const slug = `voice_${v.length + 1}_${Math.round(buf.duration * 100)}`;
+          a.samples.set(slug, buf);
+          return [...v, { slug, name: `קול ${v.length + 1}`, dur: buf.duration, color: "#F691B3" }];
+        });
+      } catch {
+        setMicErr("ההקלטה נכשלה");
+      }
+    };
+    mic.current = { recorder, stream };
+    setMicRec(true);
+    recorder.start();
+  }, [init]);
+
+  /* ── bounce: capture the master mix, download as WAV ── */
+  const toggleBounce = useCallback(() => {
+    const a = init();
+    if (bounce.current) {
+      const { sp, mute, L, R, timer } = bounce.current;
+      clearInterval(timer);
+      a.limiter.disconnect(sp);
+      sp.disconnect();
+      mute.disconnect();
+      bounce.current = null;
+      setBounceSec(-1);
+      if (L.length) {
+        const url = URL.createObjectURL(encodeWav(L, R, a.ctx.sampleRate));
+        const el = document.createElement("a");
+        el.href = url;
+        el.download = "pook-jam.wav";
+        el.click();
+        setTimeout(() => URL.revokeObjectURL(url), 5000);
+      }
+      return;
+    }
+    if (a.ctx.state === "suspended") a.ctx.resume();
+    setArmed(true);
+    const sp = a.ctx.createScriptProcessor(4096, 2, 2);
+    const mute = a.ctx.createGain();
+    mute.gain.value = 0;
+    const L = [], R = [];
+    sp.onaudioprocess = (e) => {
+      if (L.length * 4096 > a.ctx.sampleRate * 300) return; // 5-minute safety cap
+      L.push(new Float32Array(e.inputBuffer.getChannelData(0)));
+      R.push(new Float32Array(e.inputBuffer.getChannelData(1)));
+    };
+    a.limiter.connect(sp);
+    sp.connect(mute);
+    mute.connect(a.ctx.destination);
+    const timer = setInterval(() => setBounceSec((s) => s + 1), 1000);
+    bounce.current = { sp, mute, L, R, timer };
+    setBounceSec(0);
+  }, [init]);
 
   /* ── transport ── */
   const stepDur = useCallback(() => 60 / S.current.bpm / 4, []);
@@ -398,6 +522,8 @@ export default function PookManager() {
     if (raf.current) cancelAnimationFrame(raf.current);
     if (T.current.timer) clearInterval(T.current.timer);
     if (flash.current) clearTimeout(flash.current);
+    if (mic.current) { try { mic.current.recorder.stop(); } catch {} mic.current.stream.getTracks().forEach((t) => t.stop()); }
+    if (bounce.current) clearInterval(bounce.current.timer);
   }, []);
 
   /* restart clock when tempo or beat changes so the grid stays true */
@@ -551,7 +677,7 @@ export default function PookManager() {
                   <div className="h-6 rounded-sm border" style={{ background: on ? C.amber : i % 4 === 0 ? C.pad : C.panel2, borderColor: on ? C.amber : C.line2 }} />
                   <div className="mt-1 flex justify-center gap-px" style={{ height: 4 }}>
                     {hits.slice(0, 3).map((h) => (
-                      <span key={h.k} className="h-1 w-1 rounded-full" style={{ background: REAL[h.real].color }} />
+                      <span key={h.k} className="h-1 w-1 rounded-full" style={{ background: ([...REAL, ...voices][h.real] ?? REAL[0]).color }} />
                     ))}
                   </div>
                 </div>
@@ -583,6 +709,13 @@ export default function PookManager() {
               style={btn(quantize, C.amber)} aria-pressed={quantize}>
               <IconGrid /> יישור לביט
             </button>
+            <button onClick={toggleBounce}
+              className={`pk flex items-center gap-2 rounded-sm border px-3 py-2 text-sm font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${bounceSec >= 0 ? "pk-recording" : ""}`}
+              style={btn(bounceSec >= 0, C.rec)} aria-pressed={bounceSec >= 0}
+              title="לוכד את כל מה שנשמע ומוריד קובץ WAV">
+              <IconDownload />
+              {bounceSec >= 0 ? `מקליט שיר ${pad2(Math.floor(bounceSec / 60))}:${pad2(bounceSec % 60)}` : "הקלט שיר"}
+            </button>
             <label className="flex flex-1 items-center gap-2 text-xs" style={{ color: C.dim, minWidth: 150 }}>
               {bpm} BPM
               <input className="pk-rng flex-1" type="range" min="60" max="180" value={bpm}
@@ -612,19 +745,29 @@ export default function PookManager() {
           </button>
         </section>
 
-        {/* library — real farts only */}
+        {/* library — real farts + mic voices */}
         <section className="mt-3 rounded-sm border" style={{ borderColor: C.line, background: C.panel }}>
           <div className="flex items-center gap-2 border-b px-3 py-2" style={{ borderColor: C.line2 }}>
             <span className="text-xs" style={{ color: C.dim }}>פליצות</span>
-            <span className="mr-auto text-xs" style={{ color: C.dim2 }}>
-              {REAL.length} דגומות{realLoaded > 0 && realLoaded < REAL.length ? " · טוען…" : ""}
+            <span className="text-xs" style={{ color: C.dim2 }}>
+              {REAL.length + voices.length} דגומות{realLoaded > 0 && realLoaded < REAL.length ? " · טוען…" : ""}
             </span>
+            {micErr && <span className="text-xs" style={{ color: C.rec }}>{micErr}</span>}
+            <button onClick={toggleMic} disabled={!micRec && voices.length >= 6}
+              className={`pk mr-auto flex items-center gap-1.5 rounded-sm border px-2 py-1 text-xs font-bold focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400 ${micRec ? "pk-recording" : ""}`}
+              style={{ ...btn(micRec, C.rec), opacity: !micRec && voices.length >= 6 ? 0.4 : 1 }}
+              aria-pressed={micRec}
+              title={voices.length >= 6 && !micRec ? "מקסימום 6 קולות" : "הקלט קול מהמיקרופון — הוא יהפוך לפד"}>
+              <span className={micRec ? "pk-blink" : ""} style={{ display: "flex" }}><IconMic /></span>
+              {micRec ? "עצור" : "הקלט קול"}
+            </button>
           </div>
 
           <div className="grid grid-cols-3 gap-1 p-3 sm:grid-cols-5 md:grid-cols-6">
-            {REAL.map((r, ri) => {
+            {[...REAL, ...voices].map((r, ri) => {
               const hot = active === "r" + ri;
-              const ready = realLoaded >= REAL.length || (A.current && A.current.samples.has(r.slug));
+              const isVoice = ri >= REAL.length;
+              const ready = isVoice || realLoaded >= REAL.length || (A.current && A.current.samples.has(r.slug));
               return (
                 <button key={r.slug} onClick={() => { fireReal(ri); setKbUnit(ri); }}
                   className="pk flex flex-col items-start gap-1 rounded-sm border px-2 py-2 text-right focus:outline-none focus-visible:ring-2 focus-visible:ring-amber-400"
@@ -635,7 +778,9 @@ export default function PookManager() {
                   }}
                   aria-pressed={ri === kbUnit}>
                   <span className="h-1 w-full rounded-full" style={{ background: r.color, opacity: hot || ri === kbUnit ? 1 : 0.55 }} />
-                  <span className="w-full truncate text-xs font-bold" style={{ color: C.bone }}>{r.name}</span>
+                  <span className="w-full truncate text-xs font-bold" style={{ color: C.bone }}>
+                    {isVoice && "🎤 "}{r.name}
+                  </span>
                   <span className="flex w-full items-center justify-between text-xs" style={{ color: C.dim2, fontSize: 10 }}>
                     {r.dur.toFixed(1)}s
                     {ri === kbUnit && <span style={{ color: r.color }}>♪</span>}
@@ -650,7 +795,9 @@ export default function PookManager() {
         <section className="mt-3 rounded-sm border" style={{ borderColor: C.line, background: C.panel }}>
           <div className="flex flex-wrap items-center gap-2 border-b px-3 py-2" style={{ borderColor: C.line2 }}>
             <span className="text-sm font-bold" style={{ color: C.bone, letterSpacing: "0.12em" }}>קלידים</span>
-            <span className="text-xs font-bold" style={{ color: REAL[kbUnit].color }}>{REAL[kbUnit].name}</span>
+            <span className="text-xs font-bold" style={{ color: ([...REAL, ...voices][kbUnit] ?? REAL[15]).color }}>
+              {([...REAL, ...voices][kbUnit] ?? REAL[15]).name}
+            </span>
             <span className="mr-auto text-xs" style={{ color: C.dim2 }}>בחר פליצה למעלה</span>
           </div>
 
